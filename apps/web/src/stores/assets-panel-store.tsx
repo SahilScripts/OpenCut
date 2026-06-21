@@ -4,6 +4,7 @@ import { persist } from "zustand/middleware";
 import {
 	ArrowRightDoubleIcon,
 	ClosedCaptionIcon,
+	Film01Icon,
 	Folder03Icon,
 	Happy01Icon,
 	HeadphonesIcon,
@@ -11,12 +12,12 @@ import {
 	TextIcon,
 	Settings01Icon,
 	SlidersHorizontalIcon,
-	ColorsIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
 export const TAB_KEYS = [
 	"media",
+	"scene-builder",
 	"sounds",
 	"text",
 	"stickers",
@@ -39,6 +40,10 @@ export const tabs = {
 	media: {
 		icon: createHugeiconsIcon({ icon: Folder03Icon }),
 		label: "Media",
+	},
+	"scene-builder": {
+		icon: createHugeiconsIcon({ icon: Film01Icon }),
+		label: "Scene Builder",
 	},
 	sounds: {
 		icon: createHugeiconsIcon({ icon: HeadphonesIcon }),

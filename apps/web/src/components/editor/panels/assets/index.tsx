@@ -5,6 +5,7 @@ import { type Tab, useAssetsPanelStore } from "@/stores/assets-panel-store";
 import { TabBar } from "./tabbar";
 import { Captions } from "./views/captions";
 import { MediaView } from "./views/assets";
+import { SceneBuilderView } from "./views/scene-builder";
 import { SettingsView } from "./views/settings";
 import { SoundsView } from "./views/sounds";
 import { StickersView } from "./views/stickers";
@@ -16,6 +17,7 @@ export function AssetsPanel() {
 
 	const viewMap: Record<Tab, React.ReactNode> = {
 		media: <MediaView />,
+		"scene-builder": <SceneBuilderView />,
 		sounds: <SoundsView />,
 		text: <TextView />,
 		stickers: <StickersView />,
