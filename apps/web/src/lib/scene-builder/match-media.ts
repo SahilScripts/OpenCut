@@ -46,6 +46,23 @@ export function getBaseName(path: string): string {
 	return last;
 }
 
+/**
+ * The variant folder a path belongs to — the immediate parent directory.
+ *
+ * For a folder upload the browser gives paths relative to the selected parent,
+ * including it as the first segment, e.g. "Scenes/v1/scene3.jpg" -> "v1".
+ * Images placed directly in the selected folder ("Scenes/scene3.jpg") fall back
+ * to the parent name ("Scenes"); a bare file name ("scene3.jpg") yields "".
+ */
+export function getFolderName(path: string): string {
+	const segments = path
+		.replace(/\\/g, "/")
+		.split("/")
+		.filter((segment) => segment.length > 0);
+	if (segments.length < 2) return "";
+	return segments[segments.length - 2];
+}
+
 /** Split a base file name into its stem and lower-cased extension. */
 export function splitNameExt(name: string): {
 	stem: string;
@@ -103,13 +120,19 @@ export function stemMatchesScene(stem: string, sceneId: string): boolean {
 	return false;
 }
 
-/** Stable identity key for a file (name + size + lastModified). */
+/**
+ * Stable identity key for a file. Uses the relative path (when present) rather
+ * than the bare name so the same scene file in different variant folders
+ * (e.g. "v1/scene3.jpg" vs "v2/scene3.jpg") stays distinct.
+ */
 export function fileKey(file: {
 	name: string;
 	size: number;
 	lastModified: number;
+	webkitRelativePath?: string;
 }): string {
-	return `${getBaseName(file.name)}__${file.size}__${file.lastModified}`;
+	const path = file.webkitRelativePath || file.name;
+	return `${path}__${file.size}__${file.lastModified}`;
 }
 
 /**
@@ -128,6 +151,7 @@ export function toSceneMediaFile(file: File): SceneMediaFile | null {
 	return {
 		key: fileKey(file),
 		name: getBaseName(path),
+		folder: getFolderName(path),
 		extension,
 		kind,
 		file,
@@ -166,4 +190,17 @@ export function matchMediaToScenes(
 			.sort(compareCandidates);
 		return { scene, candidates };
 	});
+}
+
+/**
+ * The distinct variant folders across the given media files, in a stable
+ * display order (natural sort, so "v2" precedes "v10"). These become the
+ * columns of the scene-picker table.
+ */
+export function listFolders(mediaFiles: SceneMediaFile[]): string[] {
+	const folders = new Set<string>();
+	for (const media of mediaFiles) folders.add(media.folder);
+	return [...folders].sort((a, b) =>
+		a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+	);
 }

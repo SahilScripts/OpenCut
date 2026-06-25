@@ -4,6 +4,8 @@ import {
 	classifyExtension,
 	fileKey,
 	getBaseName,
+	getFolderName,
+	listFolders,
 	matchMediaToScenes,
 	sceneStemForms,
 	splitNameExt,
@@ -51,6 +53,20 @@ describe("getBaseName", () => {
 		expect(getBaseName("a/b/scene3.jpg")).toBe("scene3.jpg");
 		expect(getBaseName("a\\b\\scene3.jpg")).toBe("scene3.jpg");
 		expect(getBaseName("scene3.jpg")).toBe("scene3.jpg");
+	});
+});
+
+describe("getFolderName", () => {
+	test("uses the variant subfolder under the selected parent", () => {
+		expect(getFolderName("Scenes/v1/scene3.jpg")).toBe("v1");
+		expect(getFolderName("Scenes\\v2\\scene3.jpg")).toBe("v2");
+		expect(getFolderName("Scenes/v1/sub/scene3.jpg")).toBe("sub");
+	});
+	test("falls back to the parent name when files sit directly in it", () => {
+		expect(getFolderName("Scenes/scene3.jpg")).toBe("Scenes");
+	});
+	test("returns empty for a bare file name", () => {
+		expect(getFolderName("scene3.jpg")).toBe("");
 	});
 });
 
@@ -105,11 +121,14 @@ describe("toSceneMediaFile", () => {
 		expect(media?.extension).toBe("jpg");
 		expect(media?.name).toBe("scene3.jpg");
 	});
-	test("prefers webkitRelativePath for folder uploads", () => {
+	test("prefers webkitRelativePath for folder uploads and derives folder", () => {
 		const media = toSceneMediaFile(
-			fakeFile("scene3.jpg", { webkitRelativePath: "uploads/scene3.jpg" }),
+			fakeFile("scene3.jpg", {
+				webkitRelativePath: "Scenes/v1/scene3.jpg",
+			}),
 		);
 		expect(media?.name).toBe("scene3.jpg");
+		expect(media?.folder).toBe("v1");
 	});
 	test("returns null for unsupported types and bare extensions", () => {
 		expect(toSceneMediaFile(fakeFile("notes.txt"))).toBeNull();
@@ -118,10 +137,18 @@ describe("toSceneMediaFile", () => {
 });
 
 describe("fileKey / buildMediaFiles", () => {
-	test("fileKey combines name, size and lastModified", () => {
-		expect(fileKey({ name: "a/scene3.jpg", size: 10, lastModified: 5 })).toBe(
+	test("fileKey uses the relative path when present, else the name", () => {
+		expect(fileKey({ name: "scene3.jpg", size: 10, lastModified: 5 })).toBe(
 			"scene3.jpg__10__5",
 		);
+		expect(
+			fileKey({
+				name: "scene3.jpg",
+				size: 10,
+				lastModified: 5,
+				webkitRelativePath: "Scenes/v1/scene3.jpg",
+			}),
+		).toBe("Scenes/v1/scene3.jpg__10__5");
 	});
 	test("de-duplicates identical files and drops unsupported ones", () => {
 		const files = [
@@ -136,6 +163,46 @@ describe("fileKey / buildMediaFiles", () => {
 			"scene1.jpg",
 			"scene2.mp4",
 		]);
+	});
+	test("keeps same-named files from different folders distinct", () => {
+		const files = [
+			fakeFile("scene1.jpg", {
+				size: 10,
+				lastModified: 1,
+				webkitRelativePath: "Scenes/v1/scene1.jpg",
+			}),
+			fakeFile("scene1.jpg", {
+				size: 10,
+				lastModified: 1,
+				webkitRelativePath: "Scenes/v2/scene1.jpg",
+			}),
+		];
+		const built = buildMediaFiles(files);
+		expect(built).toHaveLength(2);
+		expect(built.map((m) => m.folder).sort()).toEqual(["v1", "v2"]);
+	});
+});
+
+describe("listFolders", () => {
+	test("returns distinct folders in natural order", () => {
+		const media = buildMediaFiles([
+			fakeFile("scene1.jpg", {
+				size: 1,
+				lastModified: 1,
+				webkitRelativePath: "Scenes/v10/scene1.jpg",
+			}),
+			fakeFile("scene1.jpg", {
+				size: 2,
+				lastModified: 2,
+				webkitRelativePath: "Scenes/v2/scene1.jpg",
+			}),
+			fakeFile("scene2.jpg", {
+				size: 3,
+				lastModified: 3,
+				webkitRelativePath: "Scenes/v2/scene2.jpg",
+			}),
+		]);
+		expect(listFolders(media)).toEqual(["v2", "v10"]);
 	});
 });
 

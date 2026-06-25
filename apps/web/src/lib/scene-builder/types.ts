@@ -31,10 +31,16 @@ export interface TranscriptionScene {
 
 /** A media file that has been matched to a scene by its scene number. */
 export interface SceneMediaFile {
-	/** Stable identity key for this file (name + size + lastModified). */
+	/** Stable identity key for this file (relative path + size + lastModified). */
 	key: string;
 	/** Base file name including extension, e.g. "scene3.jpg". */
 	name: string;
+	/**
+	 * The variant folder this file belongs to — the immediate parent directory
+	 * within the selected parent folder (e.g. "v1"). Empty when the file has no
+	 * directory prefix. Each folder becomes a column in the picker.
+	 */
+	folder: string;
 	/** Lower-cased extension without the dot, e.g. "jpg". */
 	extension: string;
 	/** image | video. */

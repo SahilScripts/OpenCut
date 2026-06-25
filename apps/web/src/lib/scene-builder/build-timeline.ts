@@ -10,8 +10,21 @@
  * no error. A dedicated track (rather than the main track) is used so exact
  * start times are preserved, since the main track snaps its earliest element
  * to time 0.
+ *
+ * The new track and every element are committed in a single BatchCommand
+ * AFTER all media has been saved. Adding the track and then inserting in
+ * separate command executions left an `await` (the media save) between them,
+ * during which the freshly-added empty track could be dropped from the active
+ * scene — the insert then failed with "Track not found". Batching makes the
+ * whole placement one atomic, synchronous state update (and one undo step).
  */
 
+import {
+	AddTrackCommand,
+	BatchCommand,
+	type Command,
+	InsertElementCommand,
+} from "@/lib/commands";
 import type { EditorCore } from "@/core";
 import type { ProcessedMediaAsset } from "@/lib/media/processing";
 import type { MediaType } from "@/lib/media/types";
@@ -61,12 +74,17 @@ export async function exportScenesToTimeline({
 		(a, b) => a.scene.startSeconds - b.scene.startSeconds,
 	);
 
-	const trackId = editor.timeline.addTrack({ type: "video" });
+	const addTrackCommand = new AddTrackCommand("video");
+	const trackId = addTrackCommand.getTrackId();
 
 	let placed = 0;
 	let skipped = 0;
 	const warnings: string[] = [];
+	const insertCommands: Command[] = [];
 
+	// Save all media first (async), then queue an insert command per scene. The
+	// commands are executed together below so no `await` sits between adding the
+	// track and using it.
 	for (const item of ordered) {
 		const durationTicks = secondsToTicks(
 			item.scene.endSeconds - item.scene.startSeconds,
@@ -99,12 +117,22 @@ export async function exportScenesToTimeline({
 			startTime: startTicks,
 		});
 
-		editor.timeline.insertElement({
-			element,
-			placement: { mode: "explicit", trackId },
-		});
+		insertCommands.push(
+			new InsertElementCommand({
+				element,
+				placement: { mode: "explicit", trackId },
+			}),
+		);
 		placed += 1;
 	}
+
+	if (insertCommands.length === 0) {
+		return { trackId: null, placed: 0, skipped, warnings };
+	}
+
+	editor.command.execute({
+		command: new BatchCommand([addTrackCommand, ...insertCommands]),
+	});
 
 	return { trackId, placed, skipped, warnings };
 }

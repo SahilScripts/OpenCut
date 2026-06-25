@@ -7,12 +7,23 @@ import {
 	DocumentAttachmentIcon,
 	Film01Icon,
 	Folder03Icon,
+	GridViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogClose,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import {
 	Select,
@@ -30,6 +41,7 @@ import {
 } from "@/lib/scene-builder/build-timeline";
 import {
 	buildMediaFiles,
+	listFolders,
 	matchMediaToScenes,
 } from "@/lib/scene-builder/match-media";
 import {
@@ -38,10 +50,10 @@ import {
 } from "@/lib/scene-builder/motion";
 import { parseTranscriptionFile } from "@/lib/scene-builder/parse-xlsx";
 import { formatClock } from "@/lib/scene-builder/timestamp";
-import type { SceneMatch } from "@/lib/scene-builder/types";
+import type { SceneMatch, SceneMediaFile } from "@/lib/scene-builder/types";
 import { cn } from "@/utils/ui";
 
-/** Sentinel value used by the per-scene <Select> to mean "place nothing". */
+/** Sentinel value meaning "place nothing for this scene". */
 const NONE = "__none__";
 
 /** A scene paired with the media file the user chose for it. */
@@ -65,10 +77,11 @@ export function SceneBuilderView() {
 	>([]);
 	const [mediaFolderName, setMediaFolderName] = useState<string | null>(null);
 
-	// scene.rowNumber -> chosen media key (or NONE). Absent => default candidate.
+	// scene.rowNumber -> chosen media key (or NONE). Absent => default.
 	const [selections, setSelections] = useState<Record<number, string>>({});
 	const [presetId, setPresetId] = useState<MotionPresetId>("none");
 
+	const [pickerOpen, setPickerOpen] = useState(false);
 	const [isParsing, setIsParsing] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
 	const [exportProgress, setExportProgress] = useState(0);
@@ -77,12 +90,32 @@ export function SceneBuilderView() {
 		() => matchMediaToScenes(scenes, mediaFiles),
 		[scenes, mediaFiles],
 	);
+	const folders = useMemo(() => listFolders(mediaFiles), [mediaFiles]);
 
-	/** The effective media key for a scene: explicit choice, else first candidate. */
+	// Preview URLs for image candidates, rebuilt whenever the media set changes.
+	const [thumbs, setThumbs] = useState<Record<string, string>>({});
+	useEffect(() => {
+		const urls: Record<string, string> = {};
+		for (const media of mediaFiles) {
+			if (media.kind === "image") {
+				urls[media.key] = URL.createObjectURL(media.file);
+			}
+		}
+		setThumbs(urls);
+		return () => {
+			for (const url of Object.values(urls)) URL.revokeObjectURL(url);
+		};
+	}, [mediaFiles]);
+
+	/**
+	 * The effective media key for a scene: an explicit choice when present,
+	 * otherwise the lone candidate auto-selected (so single-option scenes need
+	 * no click), otherwise NONE so the user picks the best one deliberately.
+	 */
 	const selectedKeyFor = (match: SceneMatch): string => {
 		const explicit = selections[match.scene.rowNumber];
 		if (explicit !== undefined) return explicit;
-		return match.candidates[0]?.key ?? NONE;
+		return match.candidates.length === 1 ? match.candidates[0].key : NONE;
 	};
 
 	const readyCount = matches.reduce((count, match) => {
@@ -95,6 +128,23 @@ export function SceneBuilderView() {
 	const matchedSceneCount = matches.filter(
 		(m) => m.candidates.length > 0,
 	).length;
+
+	function toggleSelect(match: SceneMatch, key: string) {
+		const next = selectedKeyFor(match) === key ? NONE : key;
+		setSelections((prev) => ({ ...prev, [match.scene.rowNumber]: next }));
+	}
+
+	/** Select the given folder's image for every scene that has one. */
+	function selectFolderForAll(folder: string) {
+		setSelections((prev) => {
+			const next = { ...prev };
+			for (const match of matches) {
+				const candidate = match.candidates.find((c) => c.folder === folder);
+				if (candidate) next[match.scene.rowNumber] = candidate.key;
+			}
+			return next;
+		});
+	}
 
 	async function onXlsxChange(event: React.ChangeEvent<HTMLInputElement>) {
 		const file = event.target.files?.[0];
@@ -130,7 +180,7 @@ export function SceneBuilderView() {
 		setMediaFiles(built);
 		setSelections({});
 
-		// Derive a folder label from the first file's relative path, if any.
+		// Derive the parent-folder label from the first file's relative path.
 		const relPath = (files[0] as File & { webkitRelativePath?: string })
 			.webkitRelativePath;
 		setMediaFolderName(
@@ -139,7 +189,10 @@ export function SceneBuilderView() {
 
 		if (built.length === 0) {
 			toast.error("No supported images or videos in that folder");
+			return;
 		}
+		// Jump straight into the picker once media is loaded.
+		setPickerOpen(true);
 	}
 
 	function openMediaPicker() {
@@ -166,7 +219,7 @@ export function SceneBuilderView() {
 			.filter((item): item is ChosenScene => item !== null);
 
 		if (chosen.length === 0) {
-			toast.error("Pick media for at least one scene first");
+			toast.error("Pick an image for at least one scene first");
 			return;
 		}
 
@@ -195,6 +248,7 @@ export function SceneBuilderView() {
 				toast.success(
 					`Added ${result.placed} scene${result.placed === 1 ? "" : "s"} to the timeline`,
 				);
+				setPickerOpen(false);
 			} else {
 				toast.error("Nothing could be placed on the timeline");
 			}
@@ -239,25 +293,23 @@ export function SceneBuilderView() {
 					<Button
 						size="sm"
 						variant="default"
-						disabled={busy || readyCount === 0 || !activeProject}
-						onClick={handleExport}
+						disabled={busy || matchedSceneCount === 0}
+						onClick={() => setPickerOpen(true)}
 						className="gap-1.5"
 					>
-						<HugeiconsIcon icon={Film01Icon} />
-						{isExporting
-							? "Building…"
-							: readyCount > 0
-								? `Add ${readyCount} to timeline`
-								: "Add to timeline"}
+						<HugeiconsIcon icon={GridViewIcon} />
+						Select images
 					</Button>
 				}
 				className="select-none"
 				contentClassName="flex flex-col gap-3 pb-4"
 			>
 				<p className="text-muted-foreground text-xs leading-relaxed">
-					Turn a transcription spreadsheet into a timeline. Files named after
-					each scene (e.g. <code className="text-foreground">scene3.jpg</code>)
-					are matched automatically and placed at their timestamps.
+					Turn a transcription spreadsheet into a timeline. Pick a parent folder
+					whose subfolders each hold one image per scene (named{" "}
+					<code className="text-foreground">scene1</code>,{" "}
+					<code className="text-foreground">scene2</code>, …); then choose the
+					best image for each scene.
 				</p>
 
 				<StepButton
@@ -278,7 +330,7 @@ export function SceneBuilderView() {
 					label="Media folder"
 					value={
 						mediaFiles.length > 0
-							? `${mediaFiles.length} file${mediaFiles.length === 1 ? "" : "s"}${mediaFolderName ? ` · ${mediaFolderName}` : ""}`
+							? `${mediaFiles.length} image${mediaFiles.length === 1 ? "" : "s"} · ${folders.length} folder${folders.length === 1 ? "" : "s"}${mediaFolderName ? ` · ${mediaFolderName}` : ""}`
 							: null
 					}
 					done={mediaFiles.length > 0}
@@ -288,59 +340,48 @@ export function SceneBuilderView() {
 
 				{parseWarnings.length > 0 && <WarningBox warnings={parseWarnings} />}
 
-				{scenes.length > 0 && mediaFiles.length > 0 && (
-					<div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-2.5 py-2">
-						<span className="text-muted-foreground text-xs">Image motion</span>
-						<Select
-							value={presetId}
-							onValueChange={(v) => setPresetId(v as MotionPresetId)}
-							disabled={busy}
-						>
-							<SelectTrigger size="sm" className="w-40">
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{MOTION_PRESETS.map((preset) => (
-									<SelectItem key={preset.id} value={preset.id}>
-										{preset.id === "none" ? "No motion" : preset.label}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-					</div>
-				)}
-
-				{isExporting && (
-					<Progress value={Math.round(exportProgress)} className="h-1.5" />
-				)}
-
-				{matches.length > 0 ? (
-					<div className="flex flex-col gap-1.5">
-						<div className="text-muted-foreground flex items-center justify-between text-[11px]">
+				{matches.length > 0 && matchedSceneCount > 0 ? (
+					<div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3">
+						<div className="text-muted-foreground flex items-center justify-between text-xs">
 							<span>
 								{matchedSceneCount} of {matches.length} scenes have media
 							</span>
 							<span>{readyCount} selected</span>
 						</div>
-						{matches.map((match) => (
-							<SceneRow
-								key={match.scene.rowNumber}
-								match={match}
-								selectedKey={selectedKeyFor(match)}
-								disabled={busy}
-								onSelect={(key) =>
-									setSelections((prev) => ({
-										...prev,
-										[match.scene.rowNumber]: key,
-									}))
-								}
-							/>
-						))}
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={busy}
+							onClick={() => setPickerOpen(true)}
+							className="gap-1.5"
+						>
+							<HugeiconsIcon icon={GridViewIcon} />
+							Open image picker
+						</Button>
 					</div>
 				) : (
 					<EmptyState hasScenes={scenes.length > 0} />
 				)}
 			</PanelView>
+
+			<ScenePickerDialog
+				open={pickerOpen}
+				onOpenChange={setPickerOpen}
+				matches={matches}
+				folders={folders}
+				thumbs={thumbs}
+				selectedKeyFor={selectedKeyFor}
+				onToggle={toggleSelect}
+				onSelectFolderForAll={selectFolderForAll}
+				readyCount={readyCount}
+				matchedSceneCount={matchedSceneCount}
+				presetId={presetId}
+				onPresetChange={setPresetId}
+				busy={busy}
+				isExporting={isExporting}
+				exportProgress={exportProgress}
+				onExport={handleExport}
+			/>
 		</>
 	);
 }
@@ -389,60 +430,251 @@ function StepButton({
 	);
 }
 
-function SceneRow({
-	match,
-	selectedKey,
-	disabled,
-	onSelect,
+function ScenePickerDialog({
+	open,
+	onOpenChange,
+	matches,
+	folders,
+	thumbs,
+	selectedKeyFor,
+	onToggle,
+	onSelectFolderForAll,
+	readyCount,
+	matchedSceneCount,
+	presetId,
+	onPresetChange,
+	busy,
+	isExporting,
+	exportProgress,
+	onExport,
 }: {
-	match: SceneMatch;
-	selectedKey: string;
-	disabled?: boolean;
-	onSelect: (key: string) => void;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	matches: SceneMatch[];
+	folders: string[];
+	thumbs: Record<string, string>;
+	selectedKeyFor: (match: SceneMatch) => string;
+	onToggle: (match: SceneMatch, key: string) => void;
+	onSelectFolderForAll: (folder: string) => void;
+	readyCount: number;
+	matchedSceneCount: number;
+	presetId: MotionPresetId;
+	onPresetChange: (id: MotionPresetId) => void;
+	busy: boolean;
+	isExporting: boolean;
+	exportProgress: number;
+	onExport: () => void;
 }) {
-	const { scene, candidates } = match;
-	const hasCandidates = candidates.length > 0;
+	// Sticky scene column + one fixed-width column per variant folder.
+	const gridTemplateColumns = `minmax(220px, 1.4fr) repeat(${folders.length}, 168px)`;
 
 	return (
-		<div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5">
-			<div className="min-w-0 flex-1">
-				<div className="flex items-center gap-1.5">
-					<span className="truncate text-sm font-medium">{scene.scene}</span>
-					<span className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
-						{formatClock(scene.startSeconds)}–{formatClock(scene.endSeconds)}
-					</span>
-				</div>
-				{scene.text && (
-					<div className="text-muted-foreground truncate text-xs">
-						{scene.text}
-					</div>
-				)}
-			</div>
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogContent className="flex max-h-[88vh] w-[calc(100%-2rem)] max-w-[min(96vw,1100px)] select-none flex-col gap-0 overflow-hidden p-0">
+				<DialogHeader>
+					<DialogTitle>Select scene images</DialogTitle>
+					<DialogDescription>
+						Pick the best image for each scene. {matchedSceneCount} of{" "}
+						{matches.length} scenes have media across {folders.length} folder
+						{folders.length === 1 ? "" : "s"}.
+					</DialogDescription>
+				</DialogHeader>
 
-			{hasCandidates ? (
-				<Select
-					value={selectedKey}
-					onValueChange={onSelect}
-					disabled={disabled}
-				>
-					<SelectTrigger size="sm" variant="outline" className="w-36 shrink-0">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value={NONE}>Skip</SelectItem>
-						{candidates.map((media) => (
-							<SelectItem key={media.key} value={media.key}>
-								{media.name}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				<div className="min-h-0 flex-1 overflow-auto">
+					<div className="min-w-max">
+						{/* Header row */}
+						<div
+							className="bg-popover sticky top-0 z-20 grid border-b"
+							style={{ gridTemplateColumns }}
+						>
+							<div className="bg-popover text-muted-foreground sticky left-0 z-30 border-r px-3 py-2 text-xs font-medium">
+								Scene
+							</div>
+							{folders.map((folder) => (
+								<div
+									key={folder || "__root__"}
+									className="flex flex-col items-center gap-0.5 px-2 py-2 text-center"
+								>
+									<span className="flex max-w-full items-center gap-1 text-xs font-medium">
+										<HugeiconsIcon
+											icon={Folder03Icon}
+											className="text-muted-foreground size-3.5 shrink-0"
+										/>
+										<span className="truncate">{folder || "Files"}</span>
+									</span>
+									<button
+										type="button"
+										disabled={busy}
+										onClick={() => onSelectFolderForAll(folder)}
+										className="text-primary text-[10px] hover:underline disabled:opacity-50"
+									>
+										Use all
+									</button>
+								</div>
+							))}
+						</div>
+
+						{/* One row per scene */}
+						{matches.map((match) => {
+							const selectedKey = selectedKeyFor(match);
+							return (
+								<div
+									key={match.scene.rowNumber}
+									className="grid border-b last:border-b-0"
+									style={{ gridTemplateColumns }}
+								>
+									<div className="bg-popover sticky left-0 z-10 flex flex-col gap-0.5 border-r px-3 py-2">
+										<span className="truncate text-sm font-medium">
+											{match.scene.scene}
+										</span>
+										<span className="text-muted-foreground text-[11px] tabular-nums">
+											{formatClock(match.scene.startSeconds)}–
+											{formatClock(match.scene.endSeconds)}
+										</span>
+										{match.scene.text && (
+											<span className="text-muted-foreground line-clamp-2 text-xs">
+												{match.scene.text}
+											</span>
+										)}
+									</div>
+
+									{folders.map((folder) => {
+										const candidates = match.candidates.filter(
+											(c) => c.folder === folder,
+										);
+										return (
+											<div
+												key={folder || "__root__"}
+												className="flex flex-wrap items-center justify-center gap-1.5 p-2"
+											>
+												{candidates.length > 0 ? (
+													candidates.map((media) => (
+														<Thumb
+															key={media.key}
+															media={media}
+															thumbUrl={thumbs[media.key]}
+															selected={selectedKey === media.key}
+															disabled={busy}
+															onClick={() => onToggle(match, media.key)}
+														/>
+													))
+												) : (
+													<span className="text-muted-foreground/50 text-xs">
+														—
+													</span>
+												)}
+											</div>
+										);
+									})}
+								</div>
+							);
+						})}
+					</div>
+				</div>
+
+				{isExporting && (
+					<Progress
+						value={Math.round(exportProgress)}
+						className="h-1 rounded-none"
+					/>
+				)}
+
+				<DialogFooter className="items-center sm:justify-between">
+					<div className="flex items-center gap-2">
+						<span className="text-muted-foreground text-xs">Image motion</span>
+						<Select
+							value={presetId}
+							onValueChange={(v) => onPresetChange(v as MotionPresetId)}
+							disabled={busy}
+						>
+							<SelectTrigger size="sm" className="w-36">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{MOTION_PRESETS.map((preset) => (
+									<SelectItem key={preset.id} value={preset.id}>
+										{preset.id === "none" ? "No motion" : preset.label}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</div>
+					<div className="flex items-center gap-2">
+						<span className="text-muted-foreground text-xs">
+							{readyCount} selected
+						</span>
+						<DialogClose asChild>
+							<Button variant="outline" size="sm" disabled={isExporting}>
+								Close
+							</Button>
+						</DialogClose>
+						<Button
+							size="sm"
+							disabled={busy || readyCount === 0}
+							onClick={onExport}
+							className="gap-1.5"
+						>
+							<HugeiconsIcon icon={Film01Icon} />
+							{isExporting ? "Building…" : `Add ${readyCount} to timeline`}
+						</Button>
+					</div>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
+function Thumb({
+	media,
+	thumbUrl,
+	selected,
+	disabled,
+	onClick,
+}: {
+	media: SceneMediaFile;
+	thumbUrl: string | undefined;
+	selected: boolean;
+	disabled?: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			disabled={disabled}
+			onClick={onClick}
+			title={media.name}
+			className={cn(
+				"relative aspect-video w-full overflow-hidden rounded-md border bg-muted/40 transition",
+				"disabled:pointer-events-none disabled:opacity-50",
+				selected
+					? "ring-primary border-primary ring-2"
+					: "hover:border-foreground/40",
+			)}
+		>
+			{thumbUrl ? (
+				<Image
+					src={thumbUrl}
+					alt={media.name}
+					fill
+					sizes="168px"
+					className="object-cover"
+					loading="lazy"
+					unoptimized
+				/>
 			) : (
-				<span className="text-muted-foreground/70 shrink-0 text-xs italic">
-					no media
+				<span className="flex size-full items-center justify-center">
+					<HugeiconsIcon
+						icon={Film01Icon}
+						className="text-muted-foreground size-5"
+					/>
 				</span>
 			)}
-		</div>
+			{selected && (
+				<span className="bg-primary text-primary-foreground absolute right-1 top-1 flex size-4 items-center justify-center rounded-full">
+					<HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4" />
+				</span>
+			)}
+		</button>
 	);
 }
 
@@ -468,7 +700,7 @@ function EmptyState({ hasScenes }: { hasScenes: boolean }) {
 			<HugeiconsIcon icon={Film01Icon} className="size-8 opacity-40" />
 			<p className="text-xs">
 				{hasScenes
-					? "Now select the folder with your scene media."
+					? "Now select the parent folder with your scene media."
 					: "Select a transcription spreadsheet to begin."}
 			</p>
 		</div>
